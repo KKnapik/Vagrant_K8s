@@ -1,5 +1,5 @@
 ---
-- hosts: all
+- hosts: node
   become: true
   tasks:
   - name: Install packages that allow apt to be used over HTTPS
@@ -40,7 +40,7 @@
 
   - name: Add vagrant user to docker group
     user:
-      name: vagrant
+      name: krkna
       group: docker
 
   - name: Remove swapfile from /etc/fstab
@@ -78,12 +78,6 @@
         - kubeadm 
         - kubectl
 
-  - name: Configure node ip
-    lineinfile:
-      path: /etc/default/kubelet
-      line: KUBELET_EXTRA_ARGS=--node-ip={{ node_ip }}
-      create: yes
-
   - name: Restart kubelet
     service:
       name: kubelet
@@ -91,7 +85,7 @@
       state: restarted
 
   - name: Copy the join command to server location
-    copy: src=/tmp/join-command dest=/tmp/join-command.sh mode=0777
+    copy: src=./join-command dest=/tmp/join-command.sh mode=0777
 
   - name: Join the node to cluster
     command: sh /tmp/join-command.sh
