@@ -1,0 +1,133 @@
+- hosts: master
+  become: true
+  tasks:
+  - name: Install packages that allow apt to be used over HTTPS
+    apt:
+      name: "{{ packages }}"
+      state: present
+      update_cache: yes
+    vars:
+      packages:
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - gnupg-agent
+      - software-properties-common
+
+  - name: Add an apt signing key for Docker
+    apt_key:
+      url: https://download.docker.com/linux/ubuntu/gpg
+      state: present
+
+  - name: Add apt repository for stable version
+    apt_repository:
+      repo: deb [arch=amd64] https://download.docker.com/linux/ubuntu xenial stable
+      state: present
+
+  - name: Install docker and its dependecies
+    apt: 
+      name: "{{ packages }}"
+      state: present
+      update_cache: yes
+    vars:
+      packages:
+      - docker-ce 
+      - docker-ce-cli 
+      - containerd.io
+    notify:
+      - docker status
+
+  - name: Add vagrant user to docker group
+    user:
+      name: vagrant
+      group: docker
+
+  - name: Remove swapfile from /etc/fstab
+    mount:
+      name: "{{ item }}"
+      fstype: swap
+      state: absent
+    with_items:
+      - swap
+      - none
+
+  - name: Disable swap
+    command: swapoff -a
+    when: ansible_swaptotal_mb > 0
+
+  - name: Add an apt signing key for Kubernetes
+    apt_key:
+      url: https://packages.cloud.google.com/apt/doc/apt-key.gpg
+      state: present
+
+  - name: Adding apt repository for Kubernetes
+    apt_repository:
+      repo: deb https://apt.kubernetes.io/ kubernetes-xenial main
+      state: present
+      filename: kubernetes.list
+
+  - name: Install Kubernetes binaries
+    apt: 
+      name: "{{ packages }}"
+      state: present
+      update_cache: yes
+    vars:
+      packages:
+        - kubelet 
+        - kubeadm 
+        - kubectl
+
+  - name: Restart kubelet
+    service:
+      name: kubelet
+      daemon_reload: yes
+      state: restarted
+
+  - name: Check if kubeadm has already run
+    stat:
+      path: "/etc/kubernetes/pki/ca.key"
+    register: kubeadm_ca
+
+  - name: Init cluster if needed
+    when: not kubeadm_ca.stat.exists
+    command: kubeadm init --apiserver-advertise-address="10.154.0.4" --apiserver-cert-extra-sans="10.154.0.4"  --node-name master-1 --pod-network-cidr=192.168.0.0/16
+    register: init_cluster
+
+  - name: Create Kubernetes config directory
+    file:
+      path: "/home/krkna/.kube/"
+      state: directory
+
+  - name: Copy admin.conf to Home directory
+    # when: init_cluster is succeeded
+    copy:
+      src: /etc/kubernetes/admin.conf
+      dest: "/home/krkna/.kube/config"
+      owner: krkna
+      group: krkna
+      mode: 0755
+      remote_src: true
+
+  - name: "Check calico daemonset is working"
+    shell: kubectl --kubeconfig=/home/krkna/.kube/config get ds --all-namespaces | grep calico
+    run_once: true
+    register: check_net
+    ignore_errors: true
+    changed_when: false
+
+  - name: Install calico pod network
+    when: check_net is failed
+    command: kubectl --kubeconfig=/home/krkna/.kube/config apply -f https://docs.projectcalico.org/v3.9/manifests/calico.yaml
+  
+  - debug: msg="{{ check_net.stdout }}"
+  
+  - name: Generate join command
+    command: kubeadm token create --print-join-command
+    register: join_command
+
+  - name: Copy join command to local file
+    local_action: copy content="{{ join_command.stdout_lines[0] }}" dest="./join-command"
+
+  handlers:
+    - name: docker status
+      service: name=docker state=started
